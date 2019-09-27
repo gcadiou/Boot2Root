@@ -1,0 +1,23 @@
+	Writeup 3
+
+	Grub
+
+On lance l’iso sur Virtualbox, et on appuie sur shift avant que grub ait boot sur linux.
+On arrive alors sur ce qui s’avère après quelques recherches être le menu textuel de Grub.
+On monte l’iso afin de chercher dans ses fichiers un indice quelconque:
+
+> hdiutil mount BornToSecHackMe-v1.1.iso
+> cd /Volumes/BornToSec
+
+Une fois monté et dans le dossier, on trouve un dossier intéressant: Isolinux
+
+D’apres le wiki de Syslinux: “ISOLINUX is a boot loader for Linux/i386 that operates off ISO 9660/El Torito CD-ROMs in "no emulation" mode”
+Dans ce dossier on a un fichier vesamenu.c32, l’extension étant celle des fichiers de boot
+Toujours sur le wiki de syslinux https://wiki.syslinux.org/wiki/index.php?title=Menu au paragraphe “The simple menu system“
+On voit que ya 2 types de menus un menu textuel et un graphique, et que le menu graphique est vesamenu.c32
+Apres plusieurs recherches nous arrivons à lancer le menu graphique de grub simplement avec la commande “vesamenu”
+On peut alors presser TAB pour changer les options de boot. D’après le lien
+https://askubuntu.com/questions/15284/how-to-boot-to-root-shell-when-grub-recovery-menu-fails-to-load-a-shell
+Il nous suffit de rajouter “init=/bin/sh” (ou /bin/bash) avant les “- -“ pour boot sur un shell en root.
+
+ON EST ROOT !

